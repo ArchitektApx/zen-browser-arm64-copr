@@ -1,0 +1,89 @@
+name: Linux Release Build
+on:
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: buildjet-16vcpu-ubuntu-2204-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with: 
+          submodules: recursive
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y dos2unix yasm nasm build-essential libgtk2.0-dev libpython3-dev m4 uuid libasound2-dev libcurl4-openssl-dev libdbus-1-dev libdrm-dev libdbus-glib-1-dev libdbus-glib-1-dev libgtk-3-dev libpulse-dev libx11-xcb-dev libxt-dev xvfb lld llvm yes
+
+      - name: Install WASI SDK
+        run: |
+          wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-arm64-linux.tar.gz
+          tar xzf wasi-sdk-24.0-arm64-linux.tar.gz -C ./wasi-sdk-24 --strip-components=1
+
+          WASI_PATH=$(pwd)/wasi-sdk-24
+          echo "WASI_SYSROOT=$WASI_PATH/share/wasi-sysroot" >> $GITHUB_ENV
+          echo "WASI_CC=$WASI_PATH/bin/clang" >> $GITHUB_ENV
+          echo "WASI_CXX=$WASI_PATH/bin/clang++" >> $GITHUB_ENV
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: |
+          npm install -g pnpm
+      
+      - name: Install npm dependencies
+        run: |
+          cd desktop
+          yes | npm install
+          npm run init
+
+      - name: Apply patches for arm64 build
+        run: |
+          sed -i 's/x86-\(64\|64-v3\)/native/g' desktop/configs/linux/mozconfig
+          sed -i 's/x86_64-pc-linux/aarch64-linux-gnu/g' desktop/configs/linux/mozconfig
+          echo "ac_add_options --with-libclang-path=/usr/lib64" >> desktop/configs/linux/mozconfig
+          sed -i '/--enable-eme/s/^/# /' desktop/configs/common/mozconfig
+
+      - name: Add locales
+        run: |
+          cd desktop
+          sh scripts/update-en-US-packs.sh
+
+      - name: Setup surfer CI
+        run: |
+          cd desktop
+          pnpm surfer ci --brand alpha --display-version 1.0.1-a.19
+
+      - name: Build 
+        run: |
+          cd desktop
+          npm run build
+
+      - name: Package
+        run: |
+          cd desktop
+          npm run package
+      
+      - name: Rename Artifact
+        run: |
+          mv desktop/dist/zen-*.tar.bz2 zen-browser-linux-arm64.tar.bz2
+
+      - name: Upload Release Artifact
+        uses: actions/upload-artifact@v2
+        with:
+          name: zen-browser-linux-arm64.tar.bz2
+          path: zen-browser-linux-arm64.tar.bz2
+
+
+      
+
+
+      
+      
+
+        
+
