@@ -4,56 +4,86 @@ on:
 
 jobs:
   build-linux:
-    runs-on: buildjet-16vcpu-ubuntu-2204-arm
+    runs-on: buildjet-32vcpu-ubuntu-2204-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with: 
           submodules: recursive
 
-      - name: Install build deps
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y dos2unix yasm nasm build-essential libgtk2.0-dev libpython3-dev m4 uuid libasound2-dev libcurl4-openssl-dev libdbus-1-dev libdrm-dev libdbus-glib-1-dev libdbus-glib-1-dev libgtk-3-dev libpulse-dev libx11-xcb-dev libxt-dev xvfb lld llvm yes
-
-      - name: Install WASI SDK
-        run: |
-          wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-arm64-linux.tar.gz
-          tar xzf wasi-sdk-24.0-arm64-linux.tar.gz -C ./wasi-sdk-24 --strip-components=1
-
-          WASI_PATH=$(pwd)/wasi-sdk-24
-          echo "WASI_SYSROOT=$WASI_PATH/share/wasi-sysroot" >> $GITHUB_ENV
-          echo "WASI_CC=$WASI_PATH/bin/clang" >> $GITHUB_ENV
-          echo "WASI_CXX=$WASI_PATH/bin/clang++" >> $GITHUB_ENV
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Install Node.js
+        uses: buildjet/setup-node@v4
         with:
-          node-version: '20'
+          node-version: 20
 
       - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install and upgrade build deps
         run: |
-          npm install -g pnpm
-      
+          sudo apt-get update -y
+          sudo apt-get install -y dos2unix yasm nasm build-essential libgtk2.0-dev libpython3-dev m4 \
+            uuid libasound2-dev libcurl4-openssl-dev libdbus-1-dev libdrm-dev libdbus-glib-1-dev \
+            libdbus-glib-1-dev libgtk-3-dev libpulse-dev libx11-xcb-dev libxt-dev xvfb
+
+      - name: Install LLVM 18 and WASM Support
+        run: | 
+          # install llvm repo
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 18 all
+
+          # wasm support
+          sudo apt-get install -y libclang-rt-18-dev-wasm32 libclang-rt-18-dev-wasm64 \
+            libc++-18-dev-wasm32 libc++abi-18-dev-wasm32 libclang-rt-18-dev-wasm32 \
+            libclang-rt-18-dev-wasm64 libclang-rt-18-dev libpolly-18-dev wasi-libc
+
+      - name: Set LLVM 18 as default and remove llvm-14
+        run: |
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+
+          sudo update-alternatives --install /usr/bin/llvm-profdata llvm-profdata /usr/bin/llvm-profdata-18 100
+
+      - name: Install Wasi sdk 24
+        run: |
+          wget https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-24/wasi-sdk-24.0-arm64-linux.tar.gz
+          mkdir wasi-sdk-24
+          tar -xvf wasi-sdk-24.0-arm64-linux.tar.gz -C ${{ github.workspace }}/wasi-sdk-24 --strip-components=1
+
+          echo "WASI_SYSROOT=${{ github.workspace }}/wasi-sdk-24/share/wasi-sysroot" >> $GITHUB_ENV
+          echo "WASM_CC=${{ github.workspace }}/wasi-sdk-24/bin/clang" >> $GITHUB_ENV
+          echo "WASM_CXX=${{ github.workspace }}/wasi-sdk-24/bin/clang++" >> $GITHUB_ENV
+
+      - name: Upgrade Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1.10.1
+      - run: rustup target add wasm32-wasi
+    
       - name: Install npm dependencies
-        run: |
+        run: | 
           cd desktop
-          yes | npm install
+          pnpm install
+
+      - name: Run Init Task 
+        run: | 
+          cd desktop 
           npm run init
 
       - name: Apply patches for arm64 build
         run: |
+          sed -i 's/ -march=x86-64"/ -march=armv8-a"/g' desktop/configs/linux/mozconfig
           sed -i 's/x86-\(64\|64-v3\)/native/g' desktop/configs/linux/mozconfig
           sed -i 's/x86_64-pc-linux/aarch64-linux-gnu/g' desktop/configs/linux/mozconfig
-          echo "ac_add_options --with-libclang-path=/usr/lib64" >> desktop/configs/linux/mozconfig
           sed -i '/--enable-eme/s/^/# /' desktop/configs/common/mozconfig
+          #echo "ac_add_options --without-wasm-sandboxed-libraries" >> desktop/configs/linux/mozconfig
 
       - name: Add locales
         run: |
           cd desktop
-          sh scripts/update-en-US-packs.sh
+          sh ./scripts/update-en-US-packs.sh
+          sh ./scripts/download-language-packs.sh
 
-      - name: Setup surfer CI
+      - name: Load surfer CI setup
         run: |
           cd desktop
           pnpm surfer ci --brand alpha --display-version 1.0.1-a.19
@@ -61,7 +91,17 @@ jobs:
       - name: Build 
         run: |
           cd desktop
-          npm run build
+          set -ex
+          Xvfb :2 -screen 0 1024x768x24 &
+          export LLVM_PROFDATA=$HOME/.mozbuild/clang/bin/llvm-profdata
+          export DISPLAY=:2
+          export ZEN_RELEASE=1
+          export SURFER_COMPAT="true"
+          
+          echo "SURFER_COMPAT=$SURFER_COMPAT" >> $GITHUB_ENV
+          echo "ZEN_RELEASE=$ZEN_RELEASE" >> $GITHUB_ENV
+
+          pnpm build
 
       - name: Package
         run: |
@@ -73,7 +113,7 @@ jobs:
           mv desktop/dist/zen-*.tar.bz2 zen-browser-linux-arm64.tar.bz2
 
       - name: Upload Release Artifact
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v4
         with:
           name: zen-browser-linux-arm64.tar.bz2
           path: zen-browser-linux-arm64.tar.bz2
