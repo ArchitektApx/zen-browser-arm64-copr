@@ -93,7 +93,7 @@ jobs:
           cd desktop
           set -ex
           Xvfb :2 -screen 0 1024x768x24 &
-          export LLVM_PROFDATA=$HOME/.mozbuild/clang/bin/llvm-profdata
+          #export LLVM_PROFDATA=$HOME/.mozbuild/clang/bin/llvm-profdata
           export DISPLAY=:2
           export ZEN_RELEASE=1
           export SURFER_COMPAT="true"
